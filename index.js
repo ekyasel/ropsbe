@@ -1281,8 +1281,13 @@ app.get('/api/report/yearly-summary', authenticateToken, async (req, res) => {
     }
 });
 
-// Start the server
-app.listen(port, () => {
-    console.log(`Server is running at http://localhost:${port}`);
-    console.log(`Swagger documentation available at http://localhost:${port}/api-docs`);
-});
+// Export the app for Vercel
+export default app;
+
+// Start the server only if run directly (not as a module)
+if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
+    app.listen(port, () => {
+        console.log(`Server is running at http://localhost:${port}`);
+        console.log(`Swagger documentation available at http://localhost:${port}/api-docs`);
+    });
+}
