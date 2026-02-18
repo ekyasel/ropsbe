@@ -1292,3 +1292,11 @@ app.get('/api/report/yearly-summary', authenticateToken, async (req, res) => {
 // Export the app for Vercel
 export default app;
 
+// Start the server only if we're not on Vercel
+if (!process.env.VERCEL) {
+    app.listen(port, () => {
+        console.log(`🚀 Server ready at http://localhost:${port}`);
+        console.log(`📖 Swagger docs at http://localhost:${port}/api-docs`);
+    });
+}
+
