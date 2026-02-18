@@ -89,6 +89,40 @@ app.get('/', (req, res) => {
 
 /**
  * @openapi
+ * /api/test-supabase:
+ *   get:
+ *     summary: Test connection to Supabase (Unauthenticated)
+ *     responses:
+ *       200:
+ *         description: Connection status and a small sample of data or error.
+ */
+app.get('/api/test-supabase', async (req, res) => {
+    try {
+        // Try to fetch a single parameter to check connectivity
+        const { data, error } = await supabase
+            .from('mst_parameter')
+            .select('param_name')
+            .limit(1);
+
+        if (error) throw error;
+
+        res.json({
+            success: true,
+            message: 'Successfully connected to Supabase',
+            sampleData: data
+        });
+    } catch (err) {
+        console.error('Supabase connection test error:', err);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to connect to Supabase',
+            error: err.message
+        });
+    }
+});
+
+/**
+ * @openapi
  * /api/register:
  *   post:
  *     summary: Register a new user
