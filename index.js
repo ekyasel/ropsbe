@@ -876,6 +876,8 @@ app.get('/api/registrations/:id', authenticateToken, async (req, res) => {
  *                 type: string
  *               dokter_operator:
  *                 type: string
+ *               dokter_anestesi:
+ *                 type: string
  *               penjamin:
  *                 type: string
  *               kelas:
@@ -966,6 +968,8 @@ app.post('/api/registrations', authenticateToken, async (req, res) => {
  *               rencana_tindakan:
  *                 type: string
  *               dokter_operator:
+ *                 type: string
+ *               dokter_anestesi:
  *                 type: string
  *               penjamin:
  *                 type: string
@@ -1429,7 +1433,7 @@ async function runDailyWhatsAppJob() {
         // 2. Fetch all surgeries for targetDate
         const { data: surgeries, error: sError } = await supabase
             .from('pendaftaran_operasi')
-            .select('nama_pasien, no_rekam_medis, dokter_operator, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis, nomor_telp_1, nomor_telp_2')
+            .select('nama_pasien, no_rekam_medis, dokter_operator, dokter_anestesi, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis, nomor_telp_1, nomor_telp_2')
             .eq('tanggal_rencana_operasi', targetDate)
             .order('ruangan_rawat_inap', { ascending: true })
             .order('jam_rencana_operasi', { ascending: true });
@@ -1489,7 +1493,8 @@ async function runDailyWhatsAppJob() {
             const lines = roomSurgeries.map((s, i) => {
                 const jam = s.jam_rencana_operasi ? s.jam_rencana_operasi.substring(0, 5) : '-';
                 return `${i + 1}. ${s.nama_pasien} (${s.no_rekam_medis || '-'})`
-                    + `\n   Dokter  : ${s.dokter_operator || '-'}`
+                    + `\n   Dokter Operator: ${s.dokter_operator || '-'}`
+                    + `\n   Dokter Anestesi: ${s.dokter_anestesi || '-'}`
                     + `\n   Jam     : ${jam}`
                     + `\n   Jenis   : ${s.jenis_operasi || '-'}`
                     + `\n   Telp 1  : ${s.nomor_telp_1 || '-'}`
