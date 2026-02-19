@@ -1374,11 +1374,49 @@ async function sendWhatsAppMessage(target, message) {
  * 1. Find all surgeries for D+2 (two days from now) in pendaftaran_operasi.
  * 2. Group them by ruangan_rawat_inap.
  * 3. For each unique room, look up the WhatsApp number in mst_parameter
- *    (param_type = 'RUANG_RAWAT_INAP', param_code = ruangan_rawat_inap value).
+ *    (param_type = 'RUANG_RAWAT_INAP', param_name = ruangan_rawat_inap value).
  * 4. Send a WhatsApp notification with the surgery list.
+ * 5. Log each execution result to cron_job_logs table.
  */
 async function runDailyWhatsAppJob() {
-    console.log('[Cron] Running daily WhatsApp job at', new Date().toISOString());
+    // Helper: current datetime as ISO string in UTC+7 (Asia/Jakarta)
+    const nowWIB = () => {
+        const d = new Date();
+        return d.toLocaleString('sv-SE', { timeZone: 'Asia/Jakarta' }).replace(' ', 'T') + '+07:00';
+    };
+
+    const startedAt = nowWIB();
+    console.log('[Cron] Running daily WhatsApp job at', startedAt);
+
+    // Insert initial log row and get its ID
+    const { data: logRow, error: logInsertError } = await supabase
+        .from('cron_job_logs')
+        .insert({
+            job_name: 'daily_whatsapp_notification',
+            status: 'running',
+            started_at: startedAt,
+            timestamp: startedAt,
+        })
+        .select('id')
+        .single();
+
+    if (logInsertError) {
+        console.error('[Cron] Failed to insert log row:', logInsertError.message);
+    }
+    const logId = logRow?.id || null;
+
+    const updateLog = async (status, summary, details = null) => {
+        if (!logId) return;
+        await supabase
+            .from('cron_job_logs')
+            .update({
+                status,
+                summary,
+                details: details ? JSON.stringify(details) : null,
+                finished_at: nowWIB(),
+            })
+            .eq('id', logId);
+    };
 
     try {
         // 1. Get D+2 date in WIB (YYYY-MM-DD)
@@ -1391,7 +1429,7 @@ async function runDailyWhatsAppJob() {
         // 2. Fetch all surgeries for targetDate
         const { data: surgeries, error: sError } = await supabase
             .from('pendaftaran_operasi')
-            .select('nama_pasien, no_rekam_medis, dokter_operator, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis')
+            .select('nama_pasien, no_rekam_medis, dokter_operator, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis, nomor_telp_1, nomor_telp_2')
             .eq('tanggal_rencana_operasi', targetDate)
             .order('ruangan_rawat_inap', { ascending: true })
             .order('jam_rencana_operasi', { ascending: true });
@@ -1399,7 +1437,9 @@ async function runDailyWhatsAppJob() {
         if (sError) throw sError;
 
         if (!surgeries || surgeries.length === 0) {
-            console.log(`[Cron] No surgeries found for ${targetDate}. No messages sent.`);
+            const msg = `No surgeries found for ${targetDate}. No messages sent.`;
+            console.log(`[Cron] ${msg}`);
+            await updateLog('success', msg);
             return;
         }
 
@@ -1414,6 +1454,8 @@ async function runDailyWhatsAppJob() {
         const uniqueRooms = Object.keys(groupedByRoom);
         console.log(`[Cron] Found ${surgeries.length} surgeries across ${uniqueRooms.length} room(s):`, uniqueRooms);
 
+        const roomResults = [];
+
         // 4. For each room, find the WA number from mst_parameter and send message
         for (const roomName of uniqueRooms) {
             // Lookup: param_type = 'RUANG_RAWAT_INAP', param_name = roomName
@@ -1426,12 +1468,16 @@ async function runDailyWhatsAppJob() {
                 .maybeSingle();
 
             if (pError) {
-                console.error(`[Cron] Error looking up param for room "${roomName}":`, pError.message);
+                const msg = `Error looking up param for room "${roomName}": ${pError.message}`;
+                console.error(`[Cron] ${msg}`);
+                roomResults.push({ room: roomName, status: 'error', reason: msg });
                 continue;
             }
 
             if (!param || !param.param_value) {
-                console.warn(`[Cron] No phone number found for room "${roomName}" in mst_parameter, skipping.`);
+                const msg = `No phone number found for room "${roomName}" in mst_parameter, skipping.`;
+                console.warn(`[Cron] ${msg}`);
+                roomResults.push({ room: roomName, status: 'skipped', reason: msg });
                 continue;
             }
 
@@ -1442,10 +1488,12 @@ async function runDailyWhatsAppJob() {
             // Build message
             const lines = roomSurgeries.map((s, i) => {
                 const jam = s.jam_rencana_operasi ? s.jam_rencana_operasi.substring(0, 5) : '-';
-                return `${i + 1}. ${s.nama_pasien} (${s.no_rekam_medis || 'RM'})`
+                return `${i + 1}. ${s.nama_pasien} (${s.no_rekam_medis || '-'})`
                     + `\n   Dokter  : ${s.dokter_operator || '-'}`
                     + `\n   Jam     : ${jam}`
                     + `\n   Jenis   : ${s.jenis_operasi || '-'}`
+                    + `\n   Telp 1  : ${s.nomor_telp_1 || '-'}`
+                    + `\n   Telp 2  : ${s.nomor_telp_2 || '-'}`
                     + `\n   Diagnosis: ${s.diagnosis || '-'}`;
             }).join('\n\n');
 
@@ -1453,19 +1501,27 @@ async function runDailyWhatsAppJob() {
 
             console.log(`[Cron] Sending WA to ${displayName} (${phoneNumber}) for room "${roomName}"...`);
             await sendWhatsAppMessage(phoneNumber, message);
+
+            roomResults.push({
+                room: roomName,
+                phone: phoneNumber,
+                status: 'sent',
+                surgery_count: roomSurgeries.length,
+            });
         }
 
-        console.log('[Cron] Daily WhatsApp job completed.');
+        const summary = `Job completed for ${targetDate}. Rooms processed: ${uniqueRooms.length}. Total surgeries: ${surgeries.length}.`;
+        console.log(`[Cron] ${summary}`);
+        await updateLog('success', summary, { targetDate, rooms: roomResults });
+
     } catch (err) {
         console.error('[Cron] Job failed:', err.message);
+        await updateLog('error', `Job failed: ${err.message}`);
     }
 }
 
 // Schedule: every day at 07:00 WIB (Asia/Jakarta)
-// cron.schedule('0 7 * * *', runDailyWhatsAppJob, {
-//     timezone: 'Asia/Jakarta',
-// });
-cron.schedule('30 13 * * *', runDailyWhatsAppJob, {
+cron.schedule('0 7 * * *', runDailyWhatsAppJob, {
     timezone: 'Asia/Jakarta',
 });
 console.log('[Cron] WhatsApp daily job scheduled at 07:00 Asia/Jakarta.');
@@ -1484,6 +1540,85 @@ console.log('[Cron] WhatsApp daily job scheduled at 07:00 Asia/Jakarta.');
 app.get('/api/test-whatsapp-job', authenticateToken, async (req, res) => {
     res.json({ message: 'WhatsApp job triggered. Check server logs.' });
     await runDailyWhatsAppJob();
+});
+
+/**
+ * @openapi
+ * /api/cron-logs:
+ *   get:
+ *     summary: Get cron job execution logs with date filter and pagination
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: date
+ *         description: Filter by date (YYYY-MM-DD) on the timestamp column
+ *         schema:
+ *           type: string
+ *           format: date
+ *       - in: query
+ *         name: job_name
+ *         description: Filter by job name
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: pageSize
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *     responses:
+ *       200:
+ *         description: Paginated list of cron job logs.
+ */
+// Get Cron Logs API
+app.get('/api/cron-logs', authenticateToken, async (req, res) => {
+    try {
+        const { date, job_name, page = 1, pageSize = 20 } = req.query;
+        const pageNum = parseInt(page);
+        const sizeNum = parseInt(pageSize);
+        const from = (pageNum - 1) * sizeNum;
+        const to = from + sizeNum - 1;
+
+        let query = supabase
+            .from('cron_job_logs')
+            .select('*', { count: 'exact' });
+
+        // Filter by date on the timestamp column (started_at)
+        if (date) {
+            const startOfDay = `${date}T00:00:00.000+07:00`;
+            const endOfDay = `${date}T23:59:59.999+07:00`;
+            query = query.gte('timestamp', startOfDay).lte('timestamp', endOfDay);
+        }
+
+        // Filter by job name
+        if (job_name) {
+            query = query.eq('job_name', job_name);
+        }
+
+        const { data: logs, error, count } = await query
+            .order('timestamp', { ascending: false })
+            .range(from, to);
+
+        if (error) throw error;
+
+        res.json({
+            data: logs,
+            pagination: {
+                total: count,
+                page: pageNum,
+                pageSize: sizeNum,
+                totalPages: Math.ceil(count / sizeNum),
+            },
+        });
+    } catch (err) {
+        console.error('Fetch cron logs error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
 });
 
 // Export the app for Vercel
