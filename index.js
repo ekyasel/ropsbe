@@ -260,7 +260,7 @@ app.post('/api/login', async (req, res) => {
 
         // Generate JWT
         const token = jwt.sign(
-            { id: user.id, email: user.email },
+            { id: user.id, email: user.email, full_name: user.full_name, role: user.role },
             process.env.JWT_SECRET || 'fallback_secret',
             { expiresIn: '24h' }
         );
@@ -744,7 +744,7 @@ app.get('/api/registrations', authenticateToken, async (req, res) => {
 
         let query = supabase
             .from('pendaftaran_operasi')
-            .select('*', { count: 'exact' });
+            .select('*, user_created:created_by(full_name)', { count: 'exact' });
 
         // Add date filters if provided (filtering on planned surgery date)
         if (startDate) {
@@ -754,14 +754,25 @@ app.get('/api/registrations', authenticateToken, async (req, res) => {
             query = query.lte('tanggal_rencana_operasi', endDate);
         }
 
+        // Role-based filtering: Admin role only sees their own registrations
+        if (req.user.role === 'Admin') {
+            query = query.eq('created_by', req.user.id);
+        }
+
         const { data: registrations, error, count } = await query
             .order('created_at', { ascending: false })
             .range(from, to);
 
         if (error) throw error;
 
+        // Flatten user_created nested object to string
+        const flattenedRegistrations = registrations?.map(reg => ({
+            ...reg,
+            user_created: reg.user_created?.full_name || null
+        }));
+
         res.json({
-            data: registrations,
+            data: flattenedRegistrations,
             pagination: {
                 total: count,
                 page: pageNum,
