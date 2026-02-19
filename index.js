@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import swaggerUi from 'swagger-ui-express';
 import swaggerJsdoc from 'swagger-jsdoc';
 import { supabase } from './supabase.js';
+import cron from 'node-cron';
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -1332,6 +1333,157 @@ app.get('/api/report/yearly-summary', authenticateToken, async (req, res) => {
             details: err.message
         });
     }
+});
+
+// ─── WhatsApp Cron Job ────────────────────────────────────────────────────────
+
+/**
+ * Send a WhatsApp message via Fonnte API.
+ * @param {string} target - Phone number of the recipient.
+ * @param {string} message - Message body.
+ */
+async function sendWhatsAppMessage(target, message) {
+    const token = process.env.FONNTE_TOKEN;
+    if (!token) {
+        console.error('[Cron] FONNTE_TOKEN is not set in environment variables.');
+        return;
+    }
+
+    const formData = new URLSearchParams();
+    formData.append('target', target);
+    formData.append('message', message);
+    formData.append('countryCode', '62');
+
+    try {
+        const response = await fetch('https://api.fonnte.com/send', {
+            method: 'POST',
+            headers: {
+                'Authorization': token,
+            },
+            body: formData,
+        });
+        const result = await response.json();
+        console.log(`[Cron] Sent WA to ${target}:`, result);
+    } catch (err) {
+        console.error(`[Cron] Failed to send WA to ${target}:`, err.message);
+    }
+}
+
+/**
+ * Main daily job:
+ * 1. Find all surgeries for D+2 (two days from now) in pendaftaran_operasi.
+ * 2. Group them by ruangan_rawat_inap.
+ * 3. For each unique room, look up the WhatsApp number in mst_parameter
+ *    (param_type = 'RUANG_RAWAT_INAP', param_code = ruangan_rawat_inap value).
+ * 4. Send a WhatsApp notification with the surgery list.
+ */
+async function runDailyWhatsAppJob() {
+    console.log('[Cron] Running daily WhatsApp job at', new Date().toISOString());
+
+    try {
+        // 1. Get D+2 date in WIB (YYYY-MM-DD)
+        const d2Date = new Date();
+        d2Date.setDate(d2Date.getDate() + 2);
+        const targetDate = d2Date.toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' });
+
+        console.log(`[Cron] Fetching surgeries for D+2: ${targetDate}`);
+
+        // 2. Fetch all surgeries for targetDate
+        const { data: surgeries, error: sError } = await supabase
+            .from('pendaftaran_operasi')
+            .select('nama_pasien, no_rekam_medis, dokter_operator, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis')
+            .eq('tanggal_rencana_operasi', targetDate)
+            .order('ruangan_rawat_inap', { ascending: true })
+            .order('jam_rencana_operasi', { ascending: true });
+
+        if (sError) throw sError;
+
+        if (!surgeries || surgeries.length === 0) {
+            console.log(`[Cron] No surgeries found for ${targetDate}. No messages sent.`);
+            return;
+        }
+
+        // 3. Group surgeries by ruangan_rawat_inap
+        const groupedByRoom = surgeries.reduce((acc, s) => {
+            const room = s.ruangan_rawat_inap || 'TIDAK DIKETAHUI';
+            if (!acc[room]) acc[room] = [];
+            acc[room].push(s);
+            return acc;
+        }, {});
+
+        const uniqueRooms = Object.keys(groupedByRoom);
+        console.log(`[Cron] Found ${surgeries.length} surgeries across ${uniqueRooms.length} room(s):`, uniqueRooms);
+
+        // 4. For each room, find the WA number from mst_parameter and send message
+        for (const roomName of uniqueRooms) {
+            // Lookup: param_type = 'RUANG_RAWAT_INAP', param_name = roomName
+            const { data: param, error: pError } = await supabase
+                .from('mst_parameter')
+                .select('param_value, param_name')
+                .eq('param_type', 'RUANG_RAWAT_INAP')
+                .eq('param_name', roomName)
+                .eq('is_active', true)
+                .maybeSingle();
+
+            if (pError) {
+                console.error(`[Cron] Error looking up param for room "${roomName}":`, pError.message);
+                continue;
+            }
+
+            if (!param || !param.param_value) {
+                console.warn(`[Cron] No phone number found for room "${roomName}" in mst_parameter, skipping.`);
+                continue;
+            }
+
+            const phoneNumber = param.param_value;
+            const displayName = param.param_name || roomName;
+            const roomSurgeries = groupedByRoom[roomName];
+
+            // Build message
+            const lines = roomSurgeries.map((s, i) => {
+                const jam = s.jam_rencana_operasi ? s.jam_rencana_operasi.substring(0, 5) : '-';
+                return `${i + 1}. ${s.nama_pasien} (${s.no_rekam_medis || 'RM'})`
+                    + `\n   Dokter  : ${s.dokter_operator || '-'}`
+                    + `\n   Jam     : ${jam}`
+                    + `\n   Jenis   : ${s.jenis_operasi || '-'}`
+                    + `\n   Diagnosis: ${s.diagnosis || '-'}`;
+            }).join('\n\n');
+
+            const message = `Selamat pagi, ${displayName}!\n\nInformasi jadwal operasi *H-2* (${targetDate}):\n\n${lines}\n\nTotal: ${roomSurgeries.length} operasi.\n\n_Pesan ini dikirim otomatis oleh SORA (Smart Operating Room Access)._`;
+
+            console.log(`[Cron] Sending WA to ${displayName} (${phoneNumber}) for room "${roomName}"...`);
+            await sendWhatsAppMessage(phoneNumber, message);
+        }
+
+        console.log('[Cron] Daily WhatsApp job completed.');
+    } catch (err) {
+        console.error('[Cron] Job failed:', err.message);
+    }
+}
+
+// Schedule: every day at 07:00 WIB (Asia/Jakarta)
+// cron.schedule('0 7 * * *', runDailyWhatsAppJob, {
+//     timezone: 'Asia/Jakarta',
+// });
+cron.schedule('30 13 * * *', runDailyWhatsAppJob, {
+    timezone: 'Asia/Jakarta',
+});
+console.log('[Cron] WhatsApp daily job scheduled at 07:00 Asia/Jakarta.');
+
+/**
+ * @openapi
+ * /api/test-whatsapp-job:
+ *   get:
+ *     summary: Manually trigger the daily WhatsApp cron job (for testing)
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Job triggered.
+ */
+app.get('/api/test-whatsapp-job', authenticateToken, async (req, res) => {
+    res.json({ message: 'WhatsApp job triggered. Check server logs.' });
+    await runDailyWhatsAppJob();
 });
 
 // Export the app for Vercel
