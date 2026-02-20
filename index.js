@@ -882,6 +882,10 @@ app.get('/api/registrations/:id', authenticateToken, async (req, res) => {
  *                 type: string
  *               kelas:
  *                 type: string
+ *               klasifikasi_operasi:
+ *                 type: string
+ *               catatan:
+ *                 type: string
  *     responses:
  *       201:
  *         description: Surgery registration created successfully.
@@ -974,6 +978,10 @@ app.post('/api/registrations', authenticateToken, async (req, res) => {
  *               penjamin:
  *                 type: string
  *               kelas:
+ *                 type: string
+ *               klasifikasi_operasi:
+ *                 type: string
+ *               catatan:
  *                 type: string
  *     responses:
  *       200:
@@ -1224,6 +1232,10 @@ app.get('/api/report/yearly-summary-poli', authenticateToken, async (req, res) =
                 "BULAN": monthName,
                 "ELEKTIF": 0,
                 "CITO": 0,
+                "KHUSUS": 0,
+                "BESAR": 0,
+                "SEDANG": 0,
+                "KECIL": 0,
                 "JUMLAH": 0
             };
 
@@ -1232,8 +1244,19 @@ app.get('/api/report/yearly-summary-poli', authenticateToken, async (req, res) =
                     const date = new Date(d.tanggal_rencana_operasi);
                     const dMonth = date.getMonth() + 1;
                     if (dMonth === monthNum) {
+                        // Count Jenis Operasi
                         if (d.jenis_operasi === 'ELEKTIF') row.ELEKTIF++;
                         else if (d.jenis_operasi === 'CITO') row.CITO++;
+
+                        // Count Klasifikasi Operasi
+                        const klasifikasi = d.klasifikasi_operasi ? d.klasifikasi_operasi.toUpperCase() : null;
+                        if (klasifikasi) {
+                            if (row[klasifikasi] !== undefined) {
+                                row[klasifikasi]++;
+                            } else {
+                                row[klasifikasi] = 1;
+                            }
+                        }
                     }
                 });
             }
@@ -1306,7 +1329,11 @@ app.get('/api/report/yearly-summary', authenticateToken, async (req, res) => {
             const row = {
                 "BULAN": monthName,
                 "ELEKTIF": 0,
-                "CITO": 0
+                "CITO": 0,
+                "KHUSUS": 0,
+                "BESAR": 0,
+                "SEDANG": 0,
+                "KECIL": 0
             };
 
             if (dbData) {
@@ -1314,8 +1341,19 @@ app.get('/api/report/yearly-summary', authenticateToken, async (req, res) => {
                     const date = new Date(d.tanggal_rencana_operasi);
                     const dMonth = date.getMonth() + 1;
                     if (dMonth === monthNum) {
+                        // Count Jenis Operasi
                         if (d.jenis_operasi === 'ELEKTIF') row.ELEKTIF++;
                         else if (d.jenis_operasi === 'CITO') row.CITO++;
+
+                        // Count Klasifikasi Operasi
+                        const klasifikasi = d.klasifikasi_operasi ? d.klasifikasi_operasi.toUpperCase() : null;
+                        if (klasifikasi) {
+                            if (row[klasifikasi] !== undefined) {
+                                row[klasifikasi]++;
+                            } else {
+                                row[klasifikasi] = 1;
+                            }
+                        }
                     }
                 });
             }
@@ -1324,8 +1362,12 @@ app.get('/api/report/yearly-summary', authenticateToken, async (req, res) => {
 
         const totalRow = {
             "BULAN": "TOTAL",
-            "ELEKTIF": report.reduce((s, r) => s + r.ELEKTIF, 0),
-            "CITO": report.reduce((s, r) => s + r.CITO, 0)
+            "ELEKTIF": report.reduce((s, r) => s + (r.ELEKTIF || 0), 0),
+            "CITO": report.reduce((s, r) => s + (r.CITO || 0), 0),
+            "KHUSUS": report.reduce((s, r) => s + (r.KHUSUS || 0), 0),
+            "BESAR": report.reduce((s, r) => s + (r.BESAR || 0), 0),
+            "SEDANG": report.reduce((s, r) => s + (r.SEDANG || 0), 0),
+            "KECIL": report.reduce((s, r) => s + (r.KECIL || 0), 0)
         };
         report.push(totalRow);
 
