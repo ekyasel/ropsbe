@@ -1350,7 +1350,7 @@ async function sendWhatsAppMessage(target, message) {
     const token = process.env.FONNTE_TOKEN;
     if (!token) {
         console.error('[Cron] FONNTE_TOKEN is not set in environment variables.');
-        return;
+        return { success: false, error: 'FONNTE_TOKEN not set' };
     }
 
     const formData = new URLSearchParams();
@@ -1368,8 +1368,10 @@ async function sendWhatsAppMessage(target, message) {
         });
         const result = await response.json();
         console.log(`[Cron] Sent WA to ${target}:`, result);
+        return { success: result.status === true, status: result.status, response: result };
     } catch (err) {
         console.error(`[Cron] Failed to send WA to ${target}:`, err.message);
+        return { success: false, error: err.message };
     }
 }
 
@@ -1444,7 +1446,7 @@ async function runDailyWhatsAppJob() {
             const msg = `No surgeries found for ${targetDate}. No messages sent.`;
             console.log(`[Cron] ${msg}`);
             await updateLog('success', msg);
-            return;
+            return { status: 'success', summary: msg, targetDate, rooms: [], total_surgeries: 0 };
         }
 
         // 3. Group surgeries by ruangan_rawat_inap
@@ -1505,23 +1507,26 @@ async function runDailyWhatsAppJob() {
             const message = `Selamat pagi, ${displayName}!\n\nInformasi jadwal operasi *H-2* (${targetDate}):\n\n${lines}\n\nTotal: ${roomSurgeries.length} operasi.\n\n_Pesan ini dikirim otomatis oleh SORA (Smart Operating Room Access)._`;
 
             console.log(`[Cron] Sending WA to ${displayName} (${phoneNumber}) for room "${roomName}"...`);
-            await sendWhatsAppMessage(phoneNumber, message);
+            const sendResult = await sendWhatsAppMessage(phoneNumber, message);
 
             roomResults.push({
                 room: roomName,
                 phone: phoneNumber,
-                status: 'sent',
+                status: sendResult?.success ? 'sent' : 'send_failed',
                 surgery_count: roomSurgeries.length,
+                wa_response: sendResult,
             });
         }
 
         const summary = `Job completed for ${targetDate}. Rooms processed: ${uniqueRooms.length}. Total surgeries: ${surgeries.length}.`;
         console.log(`[Cron] ${summary}`);
         await updateLog('success', summary, { targetDate, rooms: roomResults });
+        return { status: 'success', summary, targetDate, rooms: roomResults, total_surgeries: surgeries.length };
 
     } catch (err) {
         console.error('[Cron] Job failed:', err.message);
         await updateLog('error', `Job failed: ${err.message}`);
+        return { status: 'error', summary: `Job failed: ${err.message}` };
     }
 }
 
@@ -1543,8 +1548,18 @@ console.log('[Cron] WhatsApp daily job scheduled at 07:00 Asia/Jakarta.');
  *         description: Job triggered.
  */
 app.get('/api/test-whatsapp-job', authenticateToken, async (req, res) => {
-    res.json({ message: 'WhatsApp job triggered. Check server logs.' });
-    await runDailyWhatsAppJob();
+    try {
+        const result = await runDailyWhatsAppJob();
+        res.json({
+            message: 'WhatsApp job completed.',
+            result: result || null
+        });
+    } catch (err) {
+        res.status(500).json({
+            message: 'WhatsApp job failed.',
+            error: err.message
+        });
+    }
 });
 
 /**
