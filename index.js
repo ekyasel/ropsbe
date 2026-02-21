@@ -1650,6 +1650,480 @@ app.get('/api/test-whatsapp-job', authenticateToken, async (req, res) => {
 
 /**
  * @openapi
+ * /api/cron/whatsapp-status:
+ *   get:
+ *     summary: Get WhatsApp notification status for surgeries on a specific date (defaults to D+2)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: date
+ *         description: Target date for surgery (YYYY-MM-DD)
+ *         schema:
+ *           type: string
+ *           format: date
+ *     responses:
+ *       200:
+ *         description: List of rooms with their notification status.
+ */
+app.get('/api/cron/whatsapp-status', authenticateToken, async (req, res) => {
+    try {
+        let { date, executionDate } = req.query;
+        const originalParams = { date, executionDate };
+
+        // Helper to format date as YYYY-MM-DD in Asia/Jakarta
+        const formatDate = (d) => {
+            return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' });
+        };
+
+        // 1. Logic for date calculation
+        if (executionDate && executionDate.trim() !== '') {
+            // If executionDate is provided, target is executionDate + 2
+            const d = new Date(executionDate);
+            if (!isNaN(d.getTime())) {
+                d.setDate(d.getDate() + 2);
+                date = formatDate(d);
+            }
+        } else if (date && date.trim() !== '') {
+            // If date is provided directly, use it as is (target date)
+            // No changes needed, date is already what we want
+        } else {
+            // Default to today + 2
+            const d = new Date();
+            d.setDate(d.getDate() + 2);
+            date = formatDate(d);
+        }
+
+        // 2. Fetch all surgeries for the target date
+        const { data: surgeries, error: sError } = await supabase
+            .from('pendaftaran_operasi')
+            .select('ruangan_rawat_inap, nama_pasien')
+            .eq('tanggal_rencana_operasi', date);
+
+        if (sError) throw sError;
+
+        // 3. Get unique rooms and surgery counts
+        const roomCounts = (surgeries || []).reduce((acc, s) => {
+            const room = s.ruangan_rawat_inap || 'TIDAK DIKETAHUI';
+            acc[room] = (acc[room] || 0) + 1;
+            return acc;
+        }, {});
+
+        const uniqueRooms = Object.keys(roomCounts);
+
+        // 4. Fetch room phone numbers from mst_parameter for these rooms
+        const { data: roomParams, error: rpError } = await supabase
+            .from('mst_parameter')
+            .select('param_name, param_value')
+            .eq('param_type', 'RUANG_RAWAT_INAP')
+            .in('param_name', uniqueRooms)
+            .eq('is_active', true);
+
+        const roomPhones = (roomParams || []).reduce((acc, p) => {
+            acc[p.param_name] = p.param_value;
+            return acc;
+        }, {});
+
+        // 5. Fetch the most recent cron log that matches the target date in summary or details
+        // We look for the most recent log where summary contains the date
+        const { data: logs, error: lError } = await supabase
+            .from('cron_job_logs')
+            .select('status, summary, details, timestamp')
+            .eq('job_name', 'daily_whatsapp_notification')
+            .ilike('summary', `%${date}%`)
+            .order('timestamp', { ascending: false })
+            .limit(1);
+
+        if (lError) throw lError;
+
+        const latestLog = logs && logs.length > 0 ? logs[0] : null;
+        let logResults = {};
+
+        // 6. Parse log details if available
+        if (latestLog && latestLog.details) {
+            try {
+                const detailsObj = typeof latestLog.details === 'string' ? JSON.parse(latestLog.details) : latestLog.details;
+                if (detailsObj && detailsObj.rooms) {
+                    detailsObj.rooms.forEach(r => {
+                        logResults[r.room] = {
+                            status: r.status,
+                            phone: r.phone || null,
+                            reason: r.reason || null
+                        };
+                    });
+                }
+            } catch (pErr) {
+                console.error('[Status API] Error parsing log details:', pErr);
+            }
+        }
+
+        // 7. Build final status list
+        const results = uniqueRooms.map(room => {
+            const logEntry = logResults[room];
+            let status = 'need_resend';
+            let phone = roomPhones[room] || null; // Fallback to mst_parameter
+            let failureReason = null;
+
+            if (logEntry) {
+                status = logEntry.status; // 'sent', 'send_failed', 'skipped'
+                if (logEntry.phone) phone = logEntry.phone; // Prefer log phone if exists
+                failureReason = logEntry.reason;
+            }
+
+            return {
+                room,
+                surgery_count: roomCounts[room],
+                status,
+                phone,
+                failure_reason: failureReason,
+                last_attempt: latestLog ? latestLog.timestamp : null
+            };
+        });
+
+        res.json({
+            target_date: date,
+            total_surgeries: surgeries ? surgeries.length : 0,
+            rooms: results,
+            overall_log_status: latestLog ? latestLog.status : 'no_log_found',
+            debug: {
+                original_params: originalParams,
+                calculated_target_date: date,
+                server_time: new Date().toISOString()
+            }
+        });
+
+    } catch (err) {
+        console.error('WhatsApp status error:', err);
+        res.status(500).json({ error: 'Internal server error', details: err.message });
+    }
+});
+
+/**
+ * @openapi
+ * /api/cron/whatsapp-resend:
+ *   post:
+ *     summary: Manually resend WhatsApp notification for a specific room and date
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - date
+ *               - room
+ *             properties:
+ *               date:
+ *                 type: string
+ *                 format: date
+ *               room:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Resend attempt completed.
+ */
+app.post('/api/cron/whatsapp-resend', authenticateToken, async (req, res) => {
+    const { date, room } = req.body;
+
+    if (!date || !room) {
+        return res.status(400).json({ error: 'date and room are required' });
+    }
+
+    try {
+        console.log(`[Resend] Manually triggering WA for room: ${room}, date: ${date}`);
+
+        // 1. Fetch surgeries for this specific room and date
+        const { data: surgeries, error: sError } = await supabase
+            .from('pendaftaran_operasi')
+            .select('nama_pasien, no_rekam_medis, dokter_operator, dokter_anestesi, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis, nomor_telp_1, nomor_telp_2')
+            .eq('tanggal_rencana_operasi', date)
+            .eq('ruangan_rawat_inap', room)
+            .order('jam_rencana_operasi', { ascending: true });
+
+        if (sError) throw sError;
+
+        if (!surgeries || surgeries.length === 0) {
+            return res.status(404).json({ error: `No surgeries found for room "${room}" on ${date}.` });
+        }
+
+        // 2. Lookup phone number
+        const { data: param, error: pError } = await supabase
+            .from('mst_parameter')
+            .select('param_value, param_name')
+            .eq('param_type', 'RUANG_RAWAT_INAP')
+            .eq('param_name', room)
+            .eq('is_active', true)
+            .maybeSingle();
+
+        if (pError) throw pError;
+
+        if (!param || !param.param_value) {
+            return res.status(400).json({ error: `No phone number configured for room "${room}".` });
+        }
+
+        const phoneNumber = param.param_value;
+        const displayName = param.param_name || room;
+
+        // 3. Build message (reusing same format as cron job)
+        const lines = surgeries.map((s, i) => {
+            const jam = s.jam_rencana_operasi ? s.jam_rencana_operasi.substring(0, 5) : '-';
+            return `${i + 1}. ${s.nama_pasien} (${s.no_rekam_medis || '-'})`
+                + `\n   Dokter Operator: ${s.dokter_operator || '-'}`
+                + `\n   Dokter Anestesi: ${s.dokter_anestesi || '-'}`
+                + `\n   Jam     : ${jam}`
+                + `\n   Jenis   : ${s.jenis_operasi || '-'}`
+                + `\n   Telp 1  : ${s.nomor_telp_1 || '-'}`
+                + `\n   Telp 2  : ${s.nomor_telp_2 || '-'}`
+                + `\n   Diagnosis: ${s.diagnosis || '-'}`;
+        }).join('\n\n');
+
+        const message = `Selamat pagi, ${displayName}!\n\nInformasi jadwal operasi *H-2* (${date}):\n\n${lines}\n\nTotal: ${surgeries.length} operasi.\n\n_Pesan ini dikirim otomatis via SORA (Manual Resend)._`;
+
+        // 4. Send Message
+        const sendResult = await sendWhatsAppMessage(phoneNumber, message);
+
+        // 5. Update/Create Log for this date
+        // Note: For simplicity and to integrate with the Status API, 
+        // we'll fetch the latest log for this date and update its 'details'
+        // or create a new 'manual_resend' log if no log exists.
+
+        const { data: existingLogs } = await supabase
+            .from('cron_job_logs')
+            .select('*')
+            .eq('job_name', 'daily_whatsapp_notification')
+            .ilike('summary', `%${date}%`)
+            .order('timestamp', { ascending: false })
+            .limit(1);
+
+        const latestLog = existingLogs?.[0];
+        const resendStatus = {
+            room: room,
+            phone: phoneNumber,
+            status: sendResult?.success ? 'sent' : 'send_failed',
+            surgery_count: surgeries.length,
+            wa_response: sendResult,
+            resent_at: new Date().toISOString()
+        };
+
+        if (latestLog) {
+            // Update existing log details
+            let details = {};
+            try {
+                details = typeof latestLog.details === 'string' ? JSON.parse(latestLog.details) : (latestLog.details || {});
+            } catch (e) { }
+
+            if (!details.rooms) details.rooms = [];
+
+            // Upsert room result in details
+            const roomIdx = details.rooms.findIndex(r => r.room === room);
+            if (roomIdx >= 0) {
+                details.rooms[roomIdx] = resendStatus;
+            } else {
+                details.rooms.push(resendStatus);
+            }
+
+            await supabase
+                .from('cron_job_logs')
+                .update({
+                    details: JSON.stringify(details),
+                    summary: latestLog.summary + ` (Manual resend for ${room} at ${new Date().toLocaleTimeString()})`
+                })
+                .eq('id', latestLog.id);
+        } else {
+            // Create a new manual log entry
+            await supabase
+                .from('cron_job_logs')
+                .insert({
+                    job_name: 'daily_whatsapp_notification',
+                    status: sendResult?.success ? 'success' : 'error',
+                    started_at: new Date().toISOString(),
+                    finished_at: new Date().toISOString(),
+                    timestamp: new Date().toISOString(),
+                    summary: `Manual resend for room ${room} on date ${date}`,
+                    details: JSON.stringify({
+                        targetDate: date,
+                        rooms: [resendStatus]
+                    })
+                });
+        }
+
+        res.json({
+            message: sendResult?.success ? 'Notification resent successfully' : 'Resend attempt failed',
+            success: sendResult?.success,
+            room: room,
+            whatsapp_response: sendResult
+        });
+
+    } catch (err) {
+        console.error('[Resend API] Error:', err);
+        res.status(500).json({ error: 'Internal server error', details: err.message });
+    }
+});
+
+/**
+ * @openapi
+ * /api/whatsapp/resend:
+ *   post:
+ *     summary: Manually resend WhatsApp notification for a specific room and target date
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - targetDate
+ *               - room
+ *             properties:
+ *               targetDate:
+ *                 type: string
+ *                 format: date
+ *               room:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Resend attempt completed.
+ */
+app.post('/api/whatsapp/resend', authenticateToken, async (req, res) => {
+    const { targetDate, room } = req.body;
+
+    if (!targetDate || !room) {
+        return res.status(400).json({ error: 'targetDate and room are required' });
+    }
+
+    try {
+        console.log(`[Resend] Manually triggering WA for room: ${room}, targetDate: ${targetDate}`);
+
+        // 1. Fetch surgeries for this specific room and date
+        const { data: surgeries, error: sError } = await supabase
+            .from('pendaftaran_operasi')
+            .select('nama_pasien, no_rekam_medis, dokter_operator, dokter_anestesi, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis, nomor_telp_1, nomor_telp_2')
+            .eq('tanggal_rencana_operasi', targetDate)
+            .eq('ruangan_rawat_inap', room)
+            .order('jam_rencana_operasi', { ascending: true });
+
+        if (sError) throw sError;
+
+        if (!surgeries || surgeries.length === 0) {
+            return res.status(404).json({ error: `No surgeries found for room "${room}" on ${targetDate}.` });
+        }
+
+        // 2. Lookup phone number
+        const { data: param, error: pError } = await supabase
+            .from('mst_parameter')
+            .select('param_value, param_name')
+            .eq('param_type', 'RUANG_RAWAT_INAP')
+            .eq('param_name', room)
+            .eq('is_active', true)
+            .maybeSingle();
+
+        if (pError) throw pError;
+
+        if (!param || !param.param_value) {
+            return res.status(400).json({ error: `No phone number configured for room "${room}".` });
+        }
+
+        const phoneNumber = param.param_value;
+        const displayName = param.param_name || room;
+
+        // 3. Build message (reusing same format as cron job)
+        const lines = surgeries.map((s, i) => {
+            const jam = s.jam_rencana_operasi ? s.jam_rencana_operasi.substring(0, 5) : '-';
+            return `${i + 1}. ${s.nama_pasien} (${s.no_rekam_medis || '-'})`
+                + `\n   Dokter Operator: ${s.dokter_operator || '-'}`
+                + `\n   Dokter Anestesi: ${s.dokter_anestesi || '-'}`
+                + `\n   Jam     : ${jam}`
+                + `\n   Jenis   : ${s.jenis_operasi || '-'}`
+                + `\n   Telp 1  : ${s.nomor_telp_1 || '-'}`
+                + `\n   Telp 2  : ${s.nomor_telp_2 || '-'}`
+                + `\n   Diagnosis: ${s.diagnosis || '-'}`;
+        }).join('\n\n');
+
+        const message = `Selamat pagi, ${displayName}!\n\nInformasi jadwal operasi (${targetDate}):\n\n${lines}\n\nTotal: ${surgeries.length} operasi.\n\n_Pesan ini dikirim otomatis via SORA (Manual Resend)._`;
+
+        // 4. Send Message
+        const sendResult = await sendWhatsAppMessage(phoneNumber, message);
+
+        // 5. Update/Create Log for this date
+        const { data: existingLogs } = await supabase
+            .from('cron_job_logs')
+            .select('*')
+            .eq('job_name', 'daily_whatsapp_notification')
+            .ilike('summary', `%${targetDate}%`)
+            .order('timestamp', { ascending: false })
+            .limit(1);
+
+        const latestLog = existingLogs?.[0];
+        const resendStatus = {
+            room: room,
+            phone: phoneNumber,
+            status: sendResult?.success ? 'sent' : 'send_failed',
+            surgery_count: surgeries.length,
+            wa_response: sendResult,
+            resent_at: new Date().toISOString()
+        };
+
+        if (latestLog) {
+            // Update existing log details
+            let details = {};
+            try {
+                details = typeof latestLog.details === 'string' ? JSON.parse(latestLog.details) : (latestLog.details || {});
+            } catch (e) { }
+
+            if (!details.rooms) details.rooms = [];
+
+            // Upsert room result in details
+            const roomIdx = details.rooms.findIndex(r => r.room === room);
+            if (roomIdx >= 0) {
+                details.rooms[roomIdx] = resendStatus;
+            } else {
+                details.rooms.push(resendStatus);
+            }
+
+            await supabase
+                .from('cron_job_logs')
+                .update({
+                    details: JSON.stringify(details),
+                    summary: latestLog.summary + ` (Manual resend for ${room} at ${new Date().toLocaleTimeString()})`
+                })
+                .eq('id', latestLog.id);
+        } else {
+            // Create a new manual log entry
+            await supabase
+                .from('cron_job_logs')
+                .insert({
+                    job_name: 'daily_whatsapp_notification',
+                    status: sendResult?.success ? 'success' : 'error',
+                    started_at: new Date().toISOString(),
+                    finished_at: new Date().toISOString(),
+                    timestamp: new Date().toISOString(),
+                    summary: `Manual resend for room ${room} on date ${targetDate}`,
+                    details: JSON.stringify({
+                        targetDate: targetDate,
+                        rooms: [resendStatus]
+                    })
+                });
+        }
+
+        res.json({
+            message: sendResult?.success ? 'Notification resent successfully' : 'Resend attempt failed',
+            success: sendResult?.success,
+            room: room,
+            whatsapp_response: sendResult
+        });
+
+    } catch (err) {
+        console.error('[Resend API] Error:', err);
+        res.status(500).json({ error: 'Internal server error', details: err.message });
+    }
+});
+
+/**
+ * @openapi
  * /api/cron-logs:
  *   get:
  *     summary: Get cron job execution logs with date filter and pagination
