@@ -1572,11 +1572,55 @@ async function runDailyWhatsAppJob() {
     }
 }
 
-// Schedule: every day at 07:00 WIB (Asia/Jakarta)
-cron.schedule('0 7 * * *', runDailyWhatsAppJob, {
-    timezone: 'Asia/Jakarta',
+/**
+ * @openapi
+ * /api/cron/whatsapp-daily:
+ *   get:
+ *     summary: Vercel Cron endpoint to trigger the daily WhatsApp job
+ *     responses:
+ *       200:
+ *         description: Job triggered successfully.
+ *       401:
+ *         description: Unauthorized.
+ */
+app.get('/api/cron/whatsapp-daily', async (req, res) => {
+    // Security check: Vercel Cron sends a secret in the Authorization header
+    // OR it sends specific headers if triggered by Vercel
+    const authHeader = req.headers['authorization'];
+    const cronSecret = process.env.CRON_SECRET;
+
+    // Validate request: Either check for Vercel Cron header or CRON_SECRET in Authorization
+    const isVercelCron = req.headers['x-vercel-cron'] === '1';
+    const isAuthorized = cronSecret && authHeader === `Bearer ${cronSecret}`;
+
+    if (!isVercelCron && !isAuthorized) {
+        console.warn('[Cron] Unauthorized trigger attempt for /api/cron/whatsapp-daily');
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    try {
+        const result = await runDailyWhatsAppJob();
+        res.json({
+            message: 'WhatsApp daily cron job executed.',
+            result
+        });
+    } catch (err) {
+        console.error('[Cron] Endpoint error:', err);
+        res.status(500).json({ error: 'Internal server error', details: err.message });
+    }
 });
-console.log('[Cron] WhatsApp daily job scheduled at 07:00 Asia/Jakarta.');
+
+// Schedule: every day at 07:00 WIB (Asia/Jakarta)
+// Only schedule node-cron if NOT running on Vercel to avoid duplicates 
+// and because node-cron is unreliable in serverless.
+if (!process.env.VERCEL) {
+    cron.schedule('0 7 * * *', runDailyWhatsAppJob, {
+        timezone: 'Asia/Jakarta',
+    });
+    console.log('[Cron] Local WhatsApp daily job scheduled at 07:00 Asia/Jakarta.');
+} else {
+    console.log('[Cron] Running on Vercel: node-cron scheduler disabled (Using Vercel Crons instead).');
+}
 
 /**
  * @openapi
