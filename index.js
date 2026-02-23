@@ -1669,6 +1669,36 @@ app.get('/api/test-whatsapp-job', authenticateToken, async (req, res) => {
  *     responses:
  *       200:
  *         description: List of rooms with their notification status.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 target_date:
+ *                   type: string
+ *                 total_surgeries:
+ *                   type: integer
+ *                 rooms:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       room:
+ *                         type: string
+ *                       surgery_count:
+ *                         type: integer
+ *                       log_surgery_count:
+ *                         type: integer
+ *                       has_updates:
+ *                         type: boolean
+ *                       status:
+ *                         type: string
+ *                       phone:
+ *                         type: string
+ *                       failure_reason:
+ *                         type: string
+ *                       last_attempt:
+ *                         type: string
  */
 app.get('/api/cron/whatsapp-status', authenticateToken, async (req, res) => {
     try {
@@ -1767,16 +1797,41 @@ app.get('/api/cron/whatsapp-status', authenticateToken, async (req, res) => {
             let status = 'need_resend';
             let phone = roomPhones[room] || null; // Fallback to mst_parameter
             let failureReason = null;
+            let logSurgeryCount = 0;
+            let hasUpdates = false;
 
             if (logEntry) {
                 status = logEntry.status; // 'sent', 'send_failed', 'skipped'
                 if (logEntry.phone) phone = logEntry.phone; // Prefer log phone if exists
                 failureReason = logEntry.reason;
+
+                // Extract surgery count from the log if it exists in the log details (we need to ensure it's logged)
+                // Note: The cron and resend endpoints store surgery_count in the room results
+                // Let's re-parse details to get surgery_count specifically for this room
+                if (latestLog && latestLog.details) {
+                    try {
+                        const detailsObj = typeof latestLog.details === 'string' ? JSON.parse(latestLog.details) : latestLog.details;
+                        const roomLog = detailsObj.rooms?.find(r => r.room === room);
+                        if (roomLog) {
+                            logSurgeryCount = roomLog.surgery_count || 0;
+                        }
+                    } catch (e) { }
+                }
+
+                // Detect if actual count is different from logged count
+                if (status === 'sent' && roomCounts[room] > logSurgeryCount) {
+                    hasUpdates = true;
+                }
+            } else {
+                // If no log entry, it's definitely an update (or first time)
+                hasUpdates = roomCounts[room] > 0;
             }
 
             return {
                 room,
                 surgery_count: roomCounts[room],
+                log_surgery_count: logSurgeryCount,
+                has_updates: hasUpdates,
                 status,
                 phone,
                 failure_reason: failureReason,
