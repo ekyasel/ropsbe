@@ -886,6 +886,8 @@ app.get('/api/registrations/:id', authenticateToken, async (req, res) => {
  *                 type: string
  *               catatan:
  *                 type: string
+ *               ruang_operasi:
+ *                 type: string
  *     responses:
  *       201:
  *         description: Surgery registration created successfully.
@@ -982,6 +984,8 @@ app.post('/api/registrations', authenticateToken, async (req, res) => {
  *               klasifikasi_operasi:
  *                 type: string
  *               catatan:
+ *                 type: string
+ *               ruang_operasi:
  *                 type: string
  *     responses:
  *       200:
@@ -1474,10 +1478,9 @@ async function runDailyWhatsAppJob() {
 
         console.log(`[Cron] Fetching surgeries for D+2: ${targetDate}`);
 
-        // 2. Fetch all surgeries for targetDate
         const { data: surgeries, error: sError } = await supabase
             .from('pendaftaran_operasi')
-            .select('nama_pasien, no_rekam_medis, dokter_operator, dokter_anestesi, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis, nomor_telp_1, nomor_telp_2')
+            .select('nama_pasien, no_rekam_medis, dokter_operator, dokter_anestesi, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis, nomor_telp_1, nomor_telp_2, ruang_operasi')
             .eq('tanggal_rencana_operasi', targetDate)
             .order('ruangan_rawat_inap', { ascending: true })
             .order('jam_rencana_operasi', { ascending: true });
@@ -1543,6 +1546,7 @@ async function runDailyWhatsAppJob() {
                     + `\n   Jenis   : ${s.jenis_operasi || '-'}`
                     + `\n   Telp 1  : ${s.nomor_telp_1 || '-'}`
                     + `\n   Telp 2  : ${s.nomor_telp_2 || '-'}`
+                    + `\n   Ruang OK: ${s.ruang_operasi || '-'}`
                     + `\n   Diagnosis: ${s.diagnosis || '-'}`;
             }).join('\n\n');
 
@@ -1998,10 +2002,9 @@ app.post('/api/whatsapp/resend', authenticateToken, async (req, res) => {
     try {
         console.log(`[Resend] Manually triggering WA for room: ${room}, targetDate: ${targetDate}`);
 
-        // 1. Fetch surgeries for this specific room and date
         const { data: surgeries, error: sError } = await supabase
             .from('pendaftaran_operasi')
-            .select('nama_pasien, no_rekam_medis, dokter_operator, dokter_anestesi, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis, nomor_telp_1, nomor_telp_2')
+            .select('nama_pasien, no_rekam_medis, dokter_operator, dokter_anestesi, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis, nomor_telp_1, nomor_telp_2, ruang_operasi')
             .eq('tanggal_rencana_operasi', targetDate)
             .eq('ruangan_rawat_inap', room)
             .order('jam_rencana_operasi', { ascending: true });
@@ -2040,6 +2043,7 @@ app.post('/api/whatsapp/resend', authenticateToken, async (req, res) => {
                 + `\n   Jenis   : ${s.jenis_operasi || '-'}`
                 + `\n   Telp 1  : ${s.nomor_telp_1 || '-'}`
                 + `\n   Telp 2  : ${s.nomor_telp_2 || '-'}`
+                + `\n   Ruang OK: ${s.ruang_operasi || '-'}`
                 + `\n   Diagnosis: ${s.diagnosis || '-'}`;
         }).join('\n\n');
 
