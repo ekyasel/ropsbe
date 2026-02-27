@@ -755,10 +755,6 @@ app.get('/api/registrations', authenticateToken, async (req, res) => {
             query = query.lte('tanggal_rencana_operasi', endDate);
         }
 
-        // Role-based filtering: Admin role only sees their own registrations
-        if (req.user.role === 'Admin') {
-            query = query.eq('created_by', req.user.id);
-        }
 
         const { data: registrations, error, count } = await query
             .order('created_at', { ascending: false })
