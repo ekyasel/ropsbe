@@ -63,6 +63,33 @@ const authenticateToken = (req, res, next) => {
     }
 };
 
+/**
+ * Get parameter value from mst_parameter table.
+ * @param {string} paramCode - The code of the parameter to fetch.
+ * @returns {Promise<string|null>} - The parameter value or null if not found.
+ */
+async function getParameterValue(paramCode) {
+    try {
+        const { data, error } = await supabase
+            .from('mst_parameter')
+            .select('param_value')
+            .eq('param_code', paramCode)
+            .eq('is_active', true)
+            .single();
+
+        if (error) {
+            console.error(`Error fetching parameter ${paramCode}:`, error.message);
+            return null;
+        }
+
+        return data?.param_value || null;
+    } catch (err) {
+        console.error(`Unexpected error fetching parameter ${paramCode}:`, err.message);
+        return null;
+    }
+}
+
+
 const swaggerDocs = swaggerJsdoc(swaggerOptions);
 
 // Vercel compatible Swagger UI setup - Using single strings for better compatibility
@@ -1389,9 +1416,17 @@ app.get('/api/report/yearly-summary', authenticateToken, async (req, res) => {
  * @param {string} message - Message body.
  */
 async function sendWhatsAppMessage(target, message) {
-    const token = process.env.FONNTE_TOKEN;
+    // Try to get token from database first, fallback to env
+    let token = await getParameterValue('FONNTE_TOKEN');
     if (!token) {
-        console.error('[Cron] FONNTE_TOKEN is not set in environment variables.');
+        token = process.env.FONNTE_TOKEN;
+        if (token) {
+            console.warn('[Cron] FONNTE_TOKEN fetched from .env as fallback.');
+        }
+    }
+
+    if (!token) {
+        console.error('[Cron] FONNTE_TOKEN is not set in environment variables or database.');
         return { success: false, error: 'FONNTE_TOKEN not set' };
     }
 
