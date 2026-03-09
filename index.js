@@ -911,6 +911,8 @@ app.get('/api/registrations/:id', authenticateToken, async (req, res) => {
  *                 type: string
  *               ruang_operasi:
  *                 type: string
+ *               tindakan_operasi:
+ *                 type: string
  *     responses:
  *       201:
  *         description: Surgery registration created successfully.
@@ -1009,6 +1011,8 @@ app.post('/api/registrations', authenticateToken, async (req, res) => {
  *               catatan:
  *                 type: string
  *               ruang_operasi:
+ *                 type: string
+ *               tindakan_operasi:
  *                 type: string
  *     responses:
  *       200:
