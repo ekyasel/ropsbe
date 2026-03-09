@@ -1412,6 +1412,80 @@ app.get('/api/report/yearly-summary', authenticateToken, async (req, res) => {
     }
 });
 
+/**
+ * @openapi
+ * /api/report/doctor-surgery-count:
+ *   get:
+ *     summary: Get surgery count for a specific doctor grouped by surgery type in a year
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: year
+ *         description: Year for the report (YYYY)
+ *         schema:
+ *           type: integer
+ *           default: 2026
+ *       - in: query
+ *         name: dokter
+ *         description: Doctor name (dokter_operator)
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Grouped surgery counts for the specified doctor.
+ *       400:
+ *         description: Missing doctor name.
+ */
+// Doctor Surgery Count Report API
+app.get('/api/report/doctor-surgery-count', authenticateToken, async (req, res) => {
+    const { year, dokter } = req.query;
+    const reportYear = parseInt(year) || new Date().getFullYear();
+
+    if (!dokter) {
+        return res.status(400).json({ error: 'Parameter "dokter" is required' });
+    }
+
+    try {
+        const startOfYear = `${reportYear}-01-01`;
+        const endOfYear = `${reportYear}-12-31`;
+
+        const { data: dbData, error } = await supabase
+            .from('pendaftaran_operasi')
+            .select('tindakan_operasi')
+            .eq('dokter_operator', dokter)
+            .gte('tanggal_rencana_operasi', startOfYear)
+            .lte('tanggal_rencana_operasi', endOfYear);
+
+        if (error) throw error;
+
+        const counts = (dbData || []).reduce((acc, row) => {
+            const tindakan = row.tindakan_operasi || 'TIDAK DIKETAHUI';
+            acc[tindakan] = (acc[tindakan] || 0) + 1;
+            return acc;
+        }, {});
+
+        const tindakanList = Object.entries(counts).map(([jenis, count]) => ({
+            jenis,
+            count
+        }));
+
+        res.json({
+            dokter,
+            year: reportYear,
+            tindakan: tindakanList,
+            total: dbData ? dbData.length : 0
+        });
+    } catch (err) {
+        console.error('Doctor surgery count report error:', err);
+        res.status(500).json({
+            error: 'Internal server error while generating report',
+            details: err.message
+        });
+    }
+});
+
 // ─── WhatsApp Cron Job ────────────────────────────────────────────────────────
 
 /**
