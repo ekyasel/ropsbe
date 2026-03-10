@@ -1316,6 +1316,140 @@ app.get('/api/report/yearly-summary-poli', authenticateToken, async (req, res) =
 
 /**
  * @openapi
+ * /api/report/yearly-summary-doctor:
+ *   get:
+ *     summary: Get yearly monthly summary report for a specific doctor
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: year
+ *         description: Year for the report (YYYY)
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 2026
+ *       - in: query
+ *         name: dokter
+ *         description: Doctor name (dokter_operator)
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Monthly summary with ELEKTIF and CITO counts for the doctor.
+ */
+// Yearly Doctor Summary Report API
+app.get('/api/report/yearly-summary-doctor', authenticateToken, async (req, res) => {
+    const { year, dokter, mock } = req.query;
+    const reportYear = parseInt(year) || new Date().getFullYear();
+
+    if (!dokter && mock !== 'true') {
+        return res.status(400).json({ error: 'Parameter "dokter" is required' });
+    }
+
+    const INDONESIAN_MONTHS = [
+        "JANUARI", "PEBRUARI", "MARET", "APRIL", "MEI", "JUNI",
+        "JULI", "AGUSTUS", "SEPTEMBER", "OKTOBER", "NOPEMBER", "DESEMBER"
+    ];
+
+    // Mock response for testing
+    if (mock === 'true') {
+        const mockReport = INDONESIAN_MONTHS.map(month => ({
+            "BULAN": month,
+            "ELEKTIF": Math.floor(Math.random() * 50),
+            "CITO": Math.floor(Math.random() * 20),
+            "JUMLAH": 0
+        }));
+        mockReport.forEach(row => row.JUMLAH = row.ELEKTIF + row.CITO);
+
+        const totalRow = {
+            "BULAN": "TOTAL",
+            "ELEKTIF": mockReport.reduce((s, r) => s + r.ELEKTIF, 0),
+            "CITO": mockReport.reduce((s, r) => s + r.CITO, 0),
+            "JUMLAH": 0
+        };
+        totalRow.JUMLAH = totalRow.ELEKTIF + totalRow.CITO;
+        mockReport.push(totalRow);
+        return res.json(mockReport);
+    }
+
+    try {
+        const startOfYear = `${reportYear}-01-01`;
+        const endOfYear = `${reportYear}-12-31`;
+
+        const { data: dbData, error } = await supabase
+            .from('pendaftaran_operasi')
+            .select('tanggal_rencana_operasi, jenis_operasi, klasifikasi_operasi')
+            .eq('dokter_operator', dokter)
+            .gte('tanggal_rencana_operasi', startOfYear)
+            .lte('tanggal_rencana_operasi', endOfYear);
+
+        if (error) throw error;
+
+        const report = INDONESIAN_MONTHS.map((monthName, index) => {
+            const monthNum = index + 1;
+            const row = {
+                "BULAN": monthName,
+                "ELEKTIF": 0,
+                "CITO": 0,
+                "KHUSUS": 0,
+                "BESAR": 0,
+                "SEDANG": 0,
+                "KECIL": 0,
+                "JUMLAH": 0
+            };
+
+            if (dbData) {
+                dbData.forEach(d => {
+                    const date = new Date(d.tanggal_rencana_operasi);
+                    const dMonth = date.getMonth() + 1;
+                    if (dMonth === monthNum) {
+                        // Count Jenis Operasi
+                        if (d.jenis_operasi === 'ELEKTIF') row.ELEKTIF++;
+                        else if (d.jenis_operasi === 'CITO') row.CITO++;
+
+                        // Count Klasifikasi Operasi
+                        const klasifikasi = d.klasifikasi_operasi ? d.klasifikasi_operasi.toUpperCase() : null;
+                        if (klasifikasi) {
+                            if (row[klasifikasi] !== undefined) {
+                                row[klasifikasi]++;
+                            } else {
+                                row[klasifikasi] = 1;
+                            }
+                        }
+                    }
+                });
+            }
+            row.JUMLAH = row.ELEKTIF + row.CITO;
+            return row;
+        });
+
+        const totalRow = {
+            "BULAN": "TOTAL",
+            "ELEKTIF": report.reduce((s, r) => s + r.ELEKTIF, 0),
+            "CITO": report.reduce((s, r) => s + r.CITO, 0),
+            "KHUSUS": report.reduce((s, r) => s + r.KHUSUS, 0),
+            "BESAR": report.reduce((s, r) => s + r.BESAR, 0),
+            "SEDANG": report.reduce((s, r) => s + r.SEDANG, 0),
+            "KECIL": report.reduce((s, r) => s + r.KECIL, 0),
+            "JUMLAH": 0
+        };
+        totalRow.JUMLAH = totalRow.ELEKTIF + totalRow.CITO;
+        report.push(totalRow);
+
+        res.json(report);
+    } catch (err) {
+        console.error('Doctor summary report error:', err);
+        res.status(500).json({
+            error: 'Internal server error while generating doctor report',
+            details: err.message
+        });
+    }
+});
+
+/**
+ * @openapi
  * /api/report/yearly-summary:
  *   get:
  *     summary: Get general yearly monthly summary report for all poli
