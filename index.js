@@ -1723,7 +1723,7 @@ async function runDailyWhatsAppJob() {
 
         const { data: surgeries, error: sError } = await supabase
             .from('pendaftaran_operasi')
-            .select('nama_pasien, no_rekam_medis, umur_tahun, dokter_operator, dokter_anestesi, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis, nomor_telp_1, nomor_telp_2, ruang_operasi')
+            .select('nama_pasien, no_rekam_medis, umur_tahun, dokter_operator, dokter_anestesi, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis, nomor_telp_1, nomor_telp_2, ruang_operasi, tindakan_operasi')
             .eq('tanggal_rencana_operasi', targetDate)
             .order('ruangan_rawat_inap', { ascending: true })
             .order('jam_rencana_operasi', { ascending: true });
@@ -1790,6 +1790,7 @@ async function runDailyWhatsAppJob() {
                     + `\n   Telp 1  : ${s.nomor_telp_1 || '-'}`
                     + `\n   Telp 2  : ${s.nomor_telp_2 || '-'}`
                     + `\n   Ruang OK: ${s.ruang_operasi || '-'}`
+                    + `\n   Tindakan: ${s.tindakan_operasi || '-'}`
                     + `\n   Diagnosis: ${s.diagnosis || '-'}`;
             }).join('\n\n');
 
@@ -2139,7 +2140,7 @@ app.post('/api/cron/whatsapp-resend', authenticateToken, async (req, res) => {
         // 1. Fetch surgeries for this specific room and date
         const { data: surgeries, error: sError } = await supabase
             .from('pendaftaran_operasi')
-            .select('nama_pasien, no_rekam_medis, umur_tahun, dokter_operator, dokter_anestesi, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis, nomor_telp_1, nomor_telp_2')
+            .select('nama_pasien, no_rekam_medis, umur_tahun, dokter_operator, dokter_anestesi, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis, nomor_telp_1, nomor_telp_2, ruang_operasi, tindakan_operasi')
             .eq('tanggal_rencana_operasi', date)
             .eq('ruangan_rawat_inap', room)
             .order('jam_rencana_operasi', { ascending: true });
@@ -2178,6 +2179,8 @@ app.post('/api/cron/whatsapp-resend', authenticateToken, async (req, res) => {
                 + `\n   Jenis   : ${s.jenis_operasi || '-'}`
                 + `\n   Telp 1  : ${s.nomor_telp_1 || '-'}`
                 + `\n   Telp 2  : ${s.nomor_telp_2 || '-'}`
+                + `\n   Ruang OK: ${s.ruang_operasi || '-'}`
+                + `\n   Tindakan: ${s.tindakan_operasi || '-'}`
                 + `\n   Diagnosis: ${s.diagnosis || '-'}`;
         }).join('\n\n');
 
@@ -2302,7 +2305,7 @@ app.post('/api/whatsapp/resend', authenticateToken, async (req, res) => {
 
         const { data: surgeries, error: sError } = await supabase
             .from('pendaftaran_operasi')
-            .select('nama_pasien, no_rekam_medis, dokter_operator, dokter_anestesi, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis, nomor_telp_1, nomor_telp_2, ruang_operasi')
+            .select('nama_pasien, no_rekam_medis, umur_tahun, dokter_operator, dokter_anestesi, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis, nomor_telp_1, nomor_telp_2, ruang_operasi, tindakan_operasi')
             .eq('tanggal_rencana_operasi', targetDate)
             .eq('ruangan_rawat_inap', room)
             .order('jam_rencana_operasi', { ascending: true });
@@ -2334,7 +2337,7 @@ app.post('/api/whatsapp/resend', authenticateToken, async (req, res) => {
         // 3. Build message (reusing same format as cron job)
         const lines = surgeries.map((s, i) => {
             const jam = s.jam_rencana_operasi ? s.jam_rencana_operasi.substring(0, 5) : '-';
-            return `${i + 1}. ${s.nama_pasien} (${s.no_rekam_medis || '-'})`
+            return `${i + 1}. ${s.nama_pasien} (${s.no_rekam_medis || '-'} / ${s.umur_tahun || '-'} thn)`
                 + `\n   Dokter Operator: ${s.dokter_operator || '-'}`
                 + `\n   Dokter Anestesi: ${s.dokter_anestesi || '-'}`
                 + `\n   Jam     : ${jam}`
@@ -2342,6 +2345,7 @@ app.post('/api/whatsapp/resend', authenticateToken, async (req, res) => {
                 + `\n   Telp 1  : ${s.nomor_telp_1 || '-'}`
                 + `\n   Telp 2  : ${s.nomor_telp_2 || '-'}`
                 + `\n   Ruang OK: ${s.ruang_operasi || '-'}`
+                + `\n   Tindakan: ${s.tindakan_operasi || '-'}`
                 + `\n   Diagnosis: ${s.diagnosis || '-'}`;
         }).join('\n\n');
 
