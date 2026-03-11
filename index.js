@@ -1841,8 +1841,38 @@ app.get('/api/cron/whatsapp-daily', async (req, res) => {
     const isVercelCron = req.headers['x-vercel-cron'] === '1';
     const isAuthorized = cronSecret && authHeader === `Bearer ${cronSecret}`;
 
+    // Log the attempt for debugging
+    const nowWIB = () => {
+        const d = new Date();
+        return d.toLocaleString('sv-SE', { timeZone: 'Asia/Jakarta' }).replace(' ', 'T') + '+07:00';
+    };
+
+    const redactedHeaders = { ...req.headers };
+    if (redactedHeaders.authorization) redactedHeaders.authorization = '[REDACTED]';
+    
+    console.log('[Cron] Trigger attempt at', nowWIB(), {
+        isVercelCron,
+        isAuthorized,
+        headers: redactedHeaders
+    });
+
     if (!isVercelCron && !isAuthorized) {
         console.warn('[Cron] Unauthorized trigger attempt for /api/cron/whatsapp-daily');
+        
+        // Log unauthorized attempt to the database for visibility
+        try {
+            await supabase.from('cron_job_logs').insert({
+                job_name: 'daily_whatsapp_notification',
+                status: 'unauthorized_attempt',
+                started_at: nowWIB(),
+                timestamp: nowWIB(),
+                summary: 'Unauthorized trigger attempt',
+                details: JSON.stringify({ headers: redactedHeaders })
+            });
+        } catch (logErr) {
+            console.error('[Cron] Failed to log unauthorized attempt:', logErr.message);
+        }
+
         return res.status(401).json({ error: 'Unauthorized' });
     }
 
