@@ -501,8 +501,7 @@ app.get('/api/parameters', authenticateToken, async (req, res) => {
         const { data: parameters, error } = await supabase
             .from('mst_parameter')
             .select('*')
-            .order('param_type', { ascending: true })
-            .order('sort_order', { ascending: true });
+            .order('param_name', { ascending: true });
 
         if (error) throw error;
         res.json(parameters);
@@ -1849,7 +1848,7 @@ app.get('/api/cron/whatsapp-daily', async (req, res) => {
 
     const redactedHeaders = { ...req.headers };
     if (redactedHeaders.authorization) redactedHeaders.authorization = '[REDACTED]';
-    
+
     console.log('[Cron] Trigger attempt at', nowWIB(), {
         isVercelCron,
         isAuthorized,
@@ -1858,7 +1857,7 @@ app.get('/api/cron/whatsapp-daily', async (req, res) => {
 
     if (!isVercelCron && !isAuthorized) {
         console.warn('[Cron] Unauthorized trigger attempt for /api/cron/whatsapp-daily');
-        
+
         // Log unauthorized attempt to the database for visibility
         try {
             await supabase.from('cron_job_logs').insert({
