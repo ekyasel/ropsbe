@@ -886,6 +886,10 @@ app.get('/api/registrations/:id', authenticateToken, async (req, res) => {
  *                 type: string
  *               umur_tahun:
  *                 type: string
+ *               jenis_umur:
+ *                 type: string
+ *                 enum: [hari, bulan, tahun]
+ *                 description: Satuan umur pasien (hari, bulan, atau tahun)
  *               jenis_kelamin:
  *                 type: string
  *               nomor_telp_1:
@@ -987,6 +991,13 @@ app.post('/api/registrations', authenticateToken, async (req, res) => {
  *                 type: string
  *               umur_tahun:
  *                 type: string
+ *               umur_bulan:
+ *                 type: integer
+ *                 description: Umur dalam bulan
+ *               jenis_umur:
+ *                 type: string
+ *                 enum: [hari, bulan, tahun]
+ *                 description: Satuan umur pasien (hari, bulan, atau tahun)
  *               jenis_kelamin:
  *                 type: string
  *               nomor_telp_1:
@@ -1722,7 +1733,7 @@ async function runDailyWhatsAppJob() {
 
         const { data: surgeries, error: sError } = await supabase
             .from('pendaftaran_operasi')
-            .select('nama_pasien, no_rekam_medis, umur_tahun, dokter_operator, dokter_anestesi, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis, nomor_telp_1, nomor_telp_2, ruang_operasi, tindakan_operasi')
+            .select('nama_pasien, no_rekam_medis, umur_tahun, jenis_umur, dokter_operator, dokter_anestesi, jam_rencana_operasi, jenis_operasi, ruangan_rawat_inap, diagnosis, nomor_telp_1, nomor_telp_2, ruang_operasi, tindakan_operasi')
             .eq('tanggal_rencana_operasi', targetDate)
             .order('ruangan_rawat_inap', { ascending: true })
             .order('jam_rencana_operasi', { ascending: true });
@@ -1781,7 +1792,7 @@ async function runDailyWhatsAppJob() {
             // Build message
             const lines = roomSurgeries.map((s, i) => {
                 const jam = s.jam_rencana_operasi ? s.jam_rencana_operasi.substring(0, 5) : '-';
-                return `${i + 1}. ${s.nama_pasien} (${s.no_rekam_medis || '-'} / ${s.umur_tahun || '-'} thn)`
+                return `${i + 1}. ${s.nama_pasien} (${s.no_rekam_medis || '-'} / ${s.umur_tahun || '-'} ${s.jenis_umur || 'Thn'})`
                     + `\n   Dokter Operator: ${s.dokter_operator || '-'}`
                     + `\n   Dokter Anestesi: ${s.dokter_anestesi || '-'}`
                     + `\n   Jam     : ${jam}`
