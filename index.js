@@ -6,6 +6,10 @@ import swaggerJsdoc from 'swagger-jsdoc';
 import { supabase } from './supabase.js';
 import cron from 'node-cron';
 
+/*
+Add Comment to deploy
+*/
+
 const app = express();
 const port = process.env.PORT || 3001;
 
